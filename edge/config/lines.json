@@ -1,0 +1,66 @@
+{
+  "envelope": {
+    "temp_c": [
+      36.5,
+      37.5
+    ],
+    "ph": [
+      6.9,
+      7.2
+    ],
+    "do_pct": [
+      30.0,
+      60.0
+    ],
+    "agitation_rpm": [
+      80.0,
+      120.0
+    ],
+    "pressure_kpa": [
+      5.0,
+      15.0
+    ]
+  },
+  "setpoint": {
+    "temp_c": 37.0,
+    "ph": 7.05,
+    "do_pct": 45.0,
+    "agitation_rpm": 100.0,
+    "pressure_kpa": 10.0
+  },
+  "noise": {
+    "temp_c": 0.08,
+    "ph": 0.03,
+    "do_pct": 2.5,
+    "agitation_rpm": 1.5,
+    "pressure_kpa": 0.6
+  },
+  "step_seconds": 30,
+  "lines": {
+    "A": {
+      "device_id": "JET-A",
+      "batch_id": "BR-101-260905",
+      "zone": "L1-BR101"
+    },
+    "B": {
+      "device_id": "JET-B",
+      "batch_id": "BR-201-260905",
+      "zone": "L1-BR201"
+    }
+  },
+  "command_allowlist": {
+    "acknowledge_alarm": {
+      "alarm_id": "ALM-[AB]-\\d{5}"
+    },
+    "request_batch_hold": {
+      "reason": "str<=200"
+    },
+    "set_agitation_setpoint": {
+      "setpoint_rpm": [
+        80,
+        120
+      ]
+    }
+  },
+  "command_max_age_s": 60
+}

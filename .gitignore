@@ -1,0 +1,11 @@
+# Runtime output from the edge node — telemetry frames and seen-nonce ledgers.
+edge/out/*
+!edge/out/.gitkeep
+
+# Local secrets: EDGE_DEVICE_KEY, IOTHUB_DEVICE_CONNSTR. Commit .env.example, never .env.
+.env
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/

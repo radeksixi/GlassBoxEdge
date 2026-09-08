@@ -1,0 +1,4 @@
+# The edge node runs on the Python standard library alone in offline mode
+# (--seconds / JSONL sink). These two are only needed for the OT and cloud paths:
+asyncua>=1.1            # --opcua : real OPC UA server endpoint on the Jetson
+azure-iot-device>=2.13  # --iothub: IoT Hub device identity (telemetry + cloud-to-device commands)
