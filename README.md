@@ -29,10 +29,12 @@ edge/edge_node.py       one process, three concerns:
                           Forwarder         every 30 s: summary + edge z-score anomaly model, HMAC-signed frame
                                             with a sequence number -> IoT Hub, or a local JSONL sink offline
                           CommandValidator  the only outside path that mutates the line: a command must carry a
-                                            valid signature, a fresh nonce, an allowlisted command with in-range
-                                            params, and a valid state precondition
+                                            valid signature, a fresh nonce, an allowlisted command whose params
+                                            match the allowlist spec (numeric range, string length or pattern),
+                                            and a valid state precondition
 edge/config/lines.json  envelope · setpoints · noise · device and batch ids per line · command allowlist
-edge/out/               offline sink: <device>-telemetry.jsonl and <device>.nonces (created on demand)
+edge/out/               offline sink: <device>-telemetry.jsonl and <device>.nonces (created on demand, gitignored)
+tests/                  standard-library unit tests for the validator and frame signing
 ```
 
 ## Run
@@ -45,13 +47,17 @@ git clone https://github.com/radek-sixi/GlassBoxEdge.git
 cd GlassBoxEdge
 
 python edge/edge_node.py --line A --device JET-A --seconds 120 --inject temp_c:+0.9:60
-python edge/edge_node.py --line B --device JET-B --rogue --seconds 120
+python edge/edge_node.py --line B --device JET-B --seconds 120 --inject temp_c:+0.9:60 --rogue
 ```
 
-Frames land in `edge/out/JET-A-telemetry.jsonl`. `--inject tag:delta:seconds` pushes a tag out of the validated
-envelope (an alarm is raised after 30 s outside it); `--rogue` is compromised-device mode — the node writes prompt
-injection text into the OPC UA alarm string tag — the hostile input the cloud tier is built to survive. From this
-repo's point of view it is simply a device that lies.
+Frames land in `edge/out/JET-A-telemetry.jsonl` and `edge/out/JET-B-telemetry.jsonl`, one signed frame every
+`--frame-seconds` (30 s by default), appended across runs. `--inject tag:delta:seconds` pushes a tag out of the
+validated envelope; an alarm is raised once it has stayed outside for more than 30 s, so the injection must last
+longer than that (a 10 s injection produces no alarm). `--rogue` is compromised-device mode: whenever an alarm is
+raised, the node replaces the alarm text in the OPC UA alarm string tag (and in the `alarm_message` field of the
+frames) with prompt injection text, the hostile input the cloud tier is built to survive. `--rogue` changes nothing
+until an alarm fires, which is why the example above pairs it with `--inject`. From this repo's point of view it is
+simply a device that lies.
 
 On the Jetsons, with `pip install -r requirements.txt` and the variables from `.env.example`:
 
@@ -60,7 +66,8 @@ IOTHUB_DEVICE_CONNSTR=... EDGE_DEVICE_KEY=<per-device key> python edge/edge_node
 IOTHUB_DEVICE_CONNSTR=... EDGE_DEVICE_KEY=<per-device key> python edge/edge_node.py --line B --device JET-B --rogue --iothub
 ```
 
-`--opcua` serves `opc.tcp://0.0.0.0:4840/glassbox/<line>`. `EDGE_DEVICE_KEY` is per device and must match the key the
+`edge_node.py` reads these variables from the process environment; it does not load a `.env` file itself.
+`--opcua` serves `opc.tcp://0.0.0.0:4840/glassbox/<line>` (no security policy; keep it on a trusted OT network). `EDGE_DEVICE_KEY` is per device and must match the key the
 signer uses, or every frame verifies false and every command is rejected on `signature invalid`.
 
 | flag | default | notes |
@@ -70,13 +77,13 @@ signer uses, or every frame verifies false and every command is rejected on `sig
 | `--seconds` | 3600 | run duration |
 | `--frame-seconds` | 30 | forwarding interval |
 | `--inject` | — | `tag:delta:seconds`, repeatable |
-| `--rogue` | off | inject prompt text into alarm tags |
+| `--rogue` | off | replace alarm text with prompt injection text (only visible once an alarm fires) |
 | `--opcua` / `--iothub` | off | real OPC UA server / IoT Hub device client |
 
 ## Testing the validator without the cloud side
 
 The broker that signs commands is not in this repo, but `CommandValidator` is importable and the signing helper
-is three lines, so the accept and reject paths are easy to drive directly:
+is three lines, so the accept and reject paths are easy to drive directly. Run this from the repository root:
 
 ```python
 import sys, time; sys.path.insert(0, "edge")
@@ -96,11 +103,25 @@ signing and validating changes the signature.
 
 To see the rejections, each returning `(False, "REJECTED: ...")` with the reason: set `setpoint_rpm` to `500`
 (out of the validated range), pass the identical command twice (replay), or overwrite `signature` with
-`"hmac-sha256:" + "0" * 64`.
+`"hmac-sha256:" + "0" * 64`. Parameters are checked against `command_allowlist` in `lines.json`: a `[lo, hi]` pair is
+a numeric range, `"str<=N"` a string of at most N characters, anything else a regular expression the value must
+match in full; every listed parameter is required and unlisted ones are rejected.
 
 Note the nonce is a timestamp rather than a constant. Seen nonces are appended to `edge/out/JET-B.nonces` and
 reloaded on startup — the replay window deliberately survives a process restart — so a hardcoded nonce works
 once and is rejected on every run after that. Delete that file to reset.
+
+## Tests
+
+The validator and frame-signing tests use only the standard library:
+
+```bash
+python -m unittest discover -s tests -v      # or: python -m pytest tests
+```
+
+They cover acceptance, out-of-range and malformed parameters, replay (including across a restart), expiry, bad or
+tampered signatures and telemetry frame verification. They write nonces to a temporary directory, never to
+`edge/out/`. CI runs them on Python 3.11 and 3.12.
 
 ## Honest scope
 

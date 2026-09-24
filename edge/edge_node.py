@@ -16,7 +16,7 @@ Run on Jetson B:   python edge_node.py --line B --device JET-B --rogue --iothub 
 Offline demo:      python edge_node.py --line A --device JET-A --seconds 120 --inject temp_c:+0.9:60
 """
 from __future__ import annotations
-import argparse, asyncio, hashlib, hmac, json, os, random, time
+import argparse, asyncio, hashlib, hmac, json, os, random, re, time
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -105,29 +105,57 @@ class CommandValidator:
 
     def validate(self, cmd: dict, sim: LineSimulator, now: float | None = None) -> tuple[bool, str]:
         now = now or time.time()
+        if not isinstance(cmd, dict):
+            return False, "REJECTED: malformed command"
         body = {k: cmd.get(k) for k in ("command_id", "device_id", "command", "params", "nonce", "exp")}
         sig = cmd.get("signature", "")
-        if not hmac.compare_digest(sign(self.key, body), sig):
+        if not isinstance(sig, str) or not hmac.compare_digest(sign(self.key, body).encode(), sig.encode()):
             return False, "REJECTED: signature invalid"
         if body["device_id"] != self.device_id:
             return False, "REJECTED: command addressed to another device"
         if not isinstance(body["exp"], (int, float)) or body["exp"] < now or body["exp"] > now + self.max_age + 5:
             return False, "REJECTED: expired or not fresh"
+        if not isinstance(body["nonce"], str) or not body["nonce"] or "\n" in body["nonce"]:
+            return False, "REJECTED: malformed nonce"
         if body["nonce"] in self.seen:
             return False, "REJECTED: nonce already seen (replay)"
         if body["command"] not in self.allowlist:
             return False, f"REJECTED: command '{body['command']}' not allowlisted on device"
-        spec = self.allowlist[body["command"]]
-        for k, v in (body["params"] or {}).items():
-            if k not in spec:
-                return False, f"REJECTED: parameter '{k}' not allowed"
-            if isinstance(spec[k], list) and not (spec[k][0] <= float(v) <= spec[k][1]):
-                return False, f"REJECTED: {k}={v} outside validated range {spec[k]}"
+        problem = self._check_params(self.allowlist[body["command"]], body["params"])
+        if problem:
+            return False, "REJECTED: " + problem
         if body["command"] == "request_batch_hold" and sim.status != "running":
             return False, f"REJECTED: precondition failed (batch status {sim.status})"
         self.seen.add(body["nonce"])
         with open(self.nonce_file, "a") as f: f.write(body["nonce"] + "\n")
         return True, "validated: signature ok, nonce fresh, allowlisted, params in range, precondition ok -> " + sim.apply(body["command"], body["params"] or {})
+
+    @staticmethod
+    def _check_params(spec: dict, params) -> str | None:
+        """Every parameter in the allowlist spec is required, and nothing else is accepted.
+        Spec forms: [lo, hi] numeric range | "str<=N" string of at most N chars | anything else: regex (full match)."""
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            return "params must be an object"
+        for k in params:
+            if k not in spec:
+                return f"parameter '{k}' not allowed"
+        for k, rule in spec.items():
+            if k not in params:
+                return f"parameter '{k}' missing"
+            v = params[k]
+            if isinstance(rule, list):
+                if isinstance(v, bool) or not isinstance(v, (int, float)):
+                    return f"{k}={v!r} is not a number"
+                if not (rule[0] <= v <= rule[1]):
+                    return f"{k}={v} outside validated range {rule}"
+            elif isinstance(rule, str) and rule.startswith("str<="):
+                if not isinstance(v, str) or len(v) > int(rule[5:]):
+                    return f"{k} must be a string of at most {rule[5:]} characters"
+            elif not isinstance(v, str) or not re.fullmatch(rule, v):
+                return f"{k}={v!r} does not match pattern {rule}"
+        return None
 
 
 # ============================================================================ forwarder (signed summaries + edge anomaly model)
@@ -165,7 +193,8 @@ class Forwarder:
     @staticmethod
     def verify(key: bytes, frame: dict) -> bool:       # what the cloud ingest does before setting signature_valid=1
         body = {k: v for k, v in frame.items() if k != "signature"}
-        return hmac.compare_digest(sign(key, body), frame.get("signature", ""))
+        sig = frame.get("signature", "")
+        return isinstance(sig, str) and hmac.compare_digest(sign(key, body).encode(), sig.encode())
 
 
 # ============================================================================ sinks (IoT Hub or offline)
@@ -236,4 +265,15 @@ if __name__ == "__main__":
     ap.add_argument("--inject", action="append", help="tag:delta:seconds, e.g. temp_c:+0.9:600")
     ap.add_argument("--opcua", action="store_true"); ap.add_argument("--iothub", action="store_true")
     ap.add_argument("--seconds", type=int, default=3600); ap.add_argument("--frame-seconds", type=int, default=30)
-    asyncio.run(run(ap.parse_args()))
+    args = ap.parse_args()
+    for spec in args.inject or []:
+        parts = spec.split(":")
+        if len(parts) != 3 or parts[0] not in SETPOINT:
+            ap.error(f"--inject expects tag:delta:seconds with tag in {sorted(SETPOINT)}, got {spec!r}")
+        try:
+            float(parts[1]); float(parts[2])
+        except ValueError:
+            ap.error(f"--inject delta and seconds must be numbers, got {spec!r}")
+    if args.iothub and not os.environ.get("IOTHUB_DEVICE_CONNSTR"):
+        ap.error("--iothub requires the IOTHUB_DEVICE_CONNSTR environment variable (see .env.example)")
+    asyncio.run(run(args))
