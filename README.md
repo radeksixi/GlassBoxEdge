@@ -43,7 +43,7 @@ Offline, no cloud and no third-party packages — the standard library is enough
 Tested on Python 3.11 and 3.12:
 
 ```bash
-git clone https://github.com/radek-sixi/GlassBoxEdge.git
+git clone https://github.com/radeksixi/GlassBoxEdge.git
 cd GlassBoxEdge
 
 python edge/edge_node.py --line A --device JET-A --seconds 120 --inject temp_c:+0.9:60
